@@ -36,6 +36,16 @@ const useBadgesModule = vendetta.metro.findByName("useBadges", false);
 
 const ICON_CANDIDATES = ["ic_call", "ic_call_24px", "Phone", "PhoneCall", "VoiceChannel"];
 
+// Kettu's own Badges core plugin (src/core/plugins/badges/index.tsx) sets
+// `icon: " _"` (a literal placeholder string, not a real asset id) on every
+// badge it injects via this exact same mechanism, and that visibly works in
+// the shipped app. A previous version of this plugin left `icon` as
+// `undefined` when none of the ICON_CANDIDATES resolved via
+// getAssetIDByName — which is the likely reason the badge silently failed to
+// render even though the patch logic itself ran correctly (confirmed via
+// debug toasts). Falling back to that same placeholder now.
+const FALLBACK_ICON = " _";
+
 function resolveIcon(): unknown {
     for (const name of ICON_CANDIDATES) {
         try {
@@ -43,7 +53,7 @@ function resolveIcon(): unknown {
             if (id != null) return id;
         } catch { }
     }
-    return undefined;
+    return FALLBACK_ICON;
 }
 
 let cachedIcon: unknown;
