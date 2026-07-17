@@ -13,32 +13,51 @@ const logger = vendetta.logger;
 const { getAssetIDByName } = vendetta.ui.assets;
 const { showToast } = vendetta.ui.toasts;
 
-// TEMPORARY: surfaces what's actually happening via toasts, since there's no
-// easy way to read console/logger output on-device. Remove once the badge is
-// confirmed working.
-//
-// useBadges fires on every rendered avatar (message rows, member list, etc),
-// not just when opening a profile, so per-call toasts flood the screen and
-// become unreadable. Each *distinct* message is only ever shown once, and
-// the noisy per-hook-call messages additionally stop after a few calls.
-const DEBUG = true;
-const shownDebugMessages = new Set<string>();
-let hookCallBudget = 3;
+// TEMPORARY: toasts turned out to be unreadable for this — useBadges fires on
+// every rendered avatar (message rows, member list, etc), not just when
+// opening a profile, so they fired in a fast, overlapping stream. Instead we
+// silently accumulate entries here and expose them on-demand via a
+// `/uvsdebug` slash command (registered in registerDebugCommand below), which
+// posts them as a local message you can read/scroll at your own pace.
+// Remove all of this once the badge is confirmed working.
+const debugLog: string[] = [];
+const seenOnce = new Set<string>();
+let hookCallBudget = 5;
 
-function debugToastOnce(msg: string) {
-    if (!DEBUG || shownDebugMessages.has(msg)) return;
-    shownDebugMessages.add(msg);
-    try {
-        showToast?.(`[UVS] ${msg}`);
-    } catch { }
+function pushDebug(msg: string) {
+    debugLog.push(msg);
+    if (debugLog.length > 60) debugLog.shift();
 }
 
-function debugToastLimited(msg: string) {
-    if (!DEBUG || hookCallBudget <= 0) return;
+function debugOnce(msg: string) {
+    if (seenOnce.has(msg)) return;
+    seenOnce.add(msg);
+    pushDebug(msg);
+}
+
+function debugLimited(msg: string) {
+    if (hookCallBudget <= 0) return;
     hookCallBudget--;
-    try {
-        showToast?.(`[UVS] ${msg}${hookCallBudget === 0 ? " (further hook logs suppressed)" : ""}`);
-    } catch { }
+    pushDebug(msg + (hookCallBudget === 0 ? " (further hook logs suppressed)" : ""));
+}
+
+let unregisterDebugCommand: (() => void) | null = null;
+
+function registerDebugCommand() {
+    const messageUtil = vendetta.metro.findByProps("sendBotMessage");
+    if (!messageUtil?.sendBotMessage || typeof vendetta.commands?.registerCommand !== "function") {
+        logger?.warn("[UserVoiceShow] could not register /uvsdebug (messageUtil or registerCommand missing)");
+        return;
+    }
+
+    unregisterDebugCommand = vendetta.commands.registerCommand({
+        name: "uvsdebug",
+        description: "Show UserVoiceShow's debug log",
+        execute(_args: any[], ctx: any) {
+            const content = debugLog.length ? debugLog.join("\n") : "(no debug entries yet — open someone's profile first)";
+            messageUtil.sendBotMessage(ctx.channel.id, content);
+        },
+    });
 }
 
 const VoiceStateStore = vendetta.metro.findByStoreName("VoiceStateStore");
@@ -99,13 +118,13 @@ let unpatchBadges: (() => void) | null = null;
 
 function patchBadges() {
     if (!useBadgesModule || typeof useBadgesModule.default !== "function") {
-        debugToastOnce(`useBadges NOT found (module=${!!useBadgesModule})`);
+        debugOnce(`useBadges NOT found (module=${!!useBadgesModule})`);
         return;
     }
-    debugToastOnce("useBadges found, patch installed");
+    debugOnce("useBadges found, patch installed");
 
     cachedIcon = resolveIcon();
-    debugToastOnce(`icon resolved: ${cachedIcon != null ? String(cachedIcon) : "none"}`);
+    debugOnce(`icon resolved: ${cachedIcon != null ? String(cachedIcon) : "none"}`);
 
     unpatchBadges = vendetta.patcher.after("default", useBadgesModule, (args: any[], result: any) => {
         const user = args[0];
@@ -113,14 +132,14 @@ function patchBadges() {
 
         // Most useful single piece of info: what fields the hook's argument
         // actually has, so we can confirm/fix how userId is extracted above.
-        debugToastOnce(`user arg keys: ${user ? Object.keys(user).join(",") : "null/undefined"}`);
+        debugOnce(`user arg keys: ${user ? Object.keys(user).join(",") : "null/undefined"}`);
 
-        debugToastLimited(`hook ran, userId=${userId ?? "?"}, resultType=${Array.isArray(result) ? "array" : typeof result}`);
+        debugLimited(`hook ran, userId=${userId ?? "?"}, resultType=${Array.isArray(result) ? "array" : typeof result}`);
 
         if (!userId || !Array.isArray(result)) return;
 
         const inVoice = isUserInVoice(userId);
-        debugToastLimited(`inVoice=${inVoice} for ${userId}`);
+        debugLimited(`inVoice=${inVoice} for ${userId}`);
 
         if (inVoice) {
             result.unshift({
@@ -133,18 +152,29 @@ function patchBadges() {
 }
 
 function onLoad() {
-    debugToastOnce(`VoiceStateStore found: ${!!VoiceStateStore}`);
+    debugOnce(`VoiceStateStore found: ${!!VoiceStateStore}`);
     try {
         patchBadges();
     } catch (e) {
         logger?.error("[UserVoiceShow] failed to patch badges:", e);
-        debugToastOnce(`patch threw: ${e}`);
+        debugOnce(`patch threw: ${e}`);
     }
+
+    try {
+        registerDebugCommand();
+    } catch (e) {
+        logger?.error("[UserVoiceShow] failed to register /uvsdebug:", e);
+    }
+
+    showToast?.("UserVoiceShow loaded — run /uvsdebug after viewing a profile to see debug info");
 }
 
 function onUnload() {
     unpatchBadges?.();
     unpatchBadges = null;
-    shownDebugMessages.clear();
-    hookCallBudget = 3;
+    unregisterDebugCommand?.();
+    unregisterDebugCommand = null;
+    debugLog.length = 0;
+    seenOnce.clear();
+    hookCallBudget = 5;
 }
