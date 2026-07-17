@@ -1,6 +1,6 @@
 # kettu-user-voice-show
 
-A [Kettu](https://github.com/C0C0B01/Kettu) port of Vencord's [UserVoiceShow](https://vencord.dev/plugins/UserVoiceShow) plugin. Shows a small green phone-handset icon when a user is currently in a voice call — any guild, or a DM/group call — even if it's not one you can see or join.
+A [Kettu](https://github.com/C0C0B01/Kettu) port of Vencord's [UserVoiceShow](https://vencord.dev/plugins/UserVoiceShow) plugin. Shows Discord's own native voice-speaker icon when a user is currently in a voice call — any guild, or a DM/group call — even if it's not one you can see or join.
 
 This ships **two independent indicators**, both active at once:
 
@@ -15,7 +15,7 @@ This ships **two independent indicators**, both active at once:
 1. `useBadges` — patched via `after("default", useBadgesModule, ...)` to prepend an "In a voice call" entry to a user's badge array. The entry's `icon` field is just an inert placeholder string (`"dummy"`).
 2. `window.bunny.api.react.jsx.onJsxCreate("ProfileBadge" / "RenderedBadge" / "RenderBadge", ...)` — the piece that actually draws the icon, matched by `ret.props.id`. `window.bunny` is a true global (set by Kettu's core at `src/index.ts`), reachable even though this plugin otherwise only gets the sandboxed `vendetta` object.
 
-Both indicators use the same small (32×32, ~215 byte) icon — a green circle with a white phone-handset glyph — embedded as a `data:` base64 URI, so nothing depends on finding a real Discord built-in asset name or fetching anything over the network.
+Both indicators use Discord's own built-in `voice_bar_speaker_new` asset (found via Kettu's Settings → Developer → Asset Browser, which lists every asset name actually available at runtime), resolved with `getAssetIDByName` — so it matches Discord's own design language instead of a custom-drawn image.
 
 ## Building
 

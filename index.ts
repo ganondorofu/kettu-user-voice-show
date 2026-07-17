@@ -38,12 +38,12 @@ function isUserInVoice(userId: string): boolean {
     return false;
 }
 
-// A small (32x32, ~215 byte) green circle with a white phone-handset glyph,
-// embedded as a data: URI so this never depends on finding a real Discord
-// built-in asset name or fetching anything over the network. Used for both
-// indicators below.
-const VOICE_ICON_DATA_URI =
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAnElEQVR4nNXU2w2AMAxD0e7SrdiPOWEAkjSp7QCR+onu6UOM8beZ53FF65WoFLMbhxFoGIKw4yWEKp5GMCLWpACsXXoTIpjHvAKYCGW4BZAZF9AdfyDU9+0tGSD7LQxA4hAAOXYYwIpvAZjxMoAdn9V/gTTuAaJB4jAAjZsAC9G2ew8hf3ifBKwQ8riFkD26Dsh2mIGgxKsYSVQ5N4ra2OCoOm9aAAAAAElFTkSuQmCC";
+// Discord's own native voice-speaker icon (found via Kettu's Developer ->
+// Asset Browser, confirmed to exist in this build), used for both
+// indicators below instead of a custom-drawn image so it matches Discord's
+// actual design language.
+const { getAssetIDByName } = vendetta.ui.assets;
+const voiceIconAsset = getAssetIDByName("voice_bar_speaker_new");
 
 // --- Badge tray -------------------------------------------------------
 //
@@ -65,7 +65,7 @@ const deleteJsxCreate: undefined | ((component: string, cb: (Component: any, ret
 const useBadgesModule = vendetta.metro.findByName("useBadges", false);
 const BADGE_ICON_PLACEHOLDER = "dummy";
 const badgeIdPrefix = "user-voice-show-";
-const badgeProps = new Map<string, { id: string; source: { uri: string; }; label: string; }>();
+const badgeProps = new Map<string, { id: string; source: unknown; label: string; }>();
 
 let unpatchBadges: (() => void) | null = null;
 
@@ -102,7 +102,7 @@ function patchBadges() {
         const badgeId = `${badgeIdPrefix}${userId}`;
         badgeProps.set(badgeId, {
             id: badgeId,
-            source: { uri: VOICE_ICON_DATA_URI },
+            source: voiceIconAsset,
             label: "In a voice call",
         });
         result.unshift({
@@ -126,8 +126,8 @@ function patchBadges() {
 function buildVoiceIndicator() {
     return React.createElement(ReactNative.Image, {
         key: "user-voice-show-username-icon",
-        source: { uri: VOICE_ICON_DATA_URI },
-        style: { width: 12, height: 12, marginLeft: 4, borderRadius: 6 },
+        source: voiceIconAsset,
+        style: { width: 14, height: 14, marginLeft: 4 },
     });
 }
 
