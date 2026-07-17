@@ -10,7 +10,6 @@
 declare const vendetta: any;
 
 const logger = vendetta.logger;
-const { getAssetIDByName } = vendetta.ui.assets;
 const { showToast } = vendetta.ui.toasts;
 
 // TEMPORARY: toasts turned out to be unreadable for this — useBadges fires on
@@ -70,32 +69,36 @@ const VoiceStateStore = vendetta.metro.findByStoreName("VoiceStateStore");
 // internal findByNameLazy.
 const useBadgesModule = vendetta.metro.findByName("useBadges", false);
 
-const ICON_CANDIDATES = ["ic_call", "ic_call_24px", "Phone", "PhoneCall", "VoiceChannel"];
-
 // A tiny (24x24, 145 byte) solid green circle PNG, embedded as a data: URI so
 // this never depends on finding the right built-in Discord asset name or
-// hosting/fetching an external image. Debug logs confirmed the badge-array
-// patch itself works correctly (hook runs, inVoice detected, entry unshifted)
-// with `icon: " _"` — the literal placeholder Kettu's own Badges core plugin
-// uses — but nothing visibly rendered. That placeholder isn't a real image
-// source; the core plugin's *actual* pixels come from a separate internal-
-// only onJsxCreate patch on ProfileBadge/RenderedBadge that isn't reachable
-// from this vendetta-compat plugin. Passing a real `{ uri }` image source
-// directly should render regardless of that.
+// hosting/fetching an external image.
 const VOICE_ICON_DATA_URI =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAWElEQVR4nO3Tyw0AIAhEQXqxK/uzTi1AJHxWI9FNuL45QXTDSquduy1RCGaNmxBvXIVE4yKCii+R3AA6PiEfeADI/wdHACTCxlGIGI8iqrgXMcW1WCiK2gA+FDGuAwEtHAAAAABJRU5ErkJggg==";
 
-function resolveIcon(): unknown {
-    for (const name of ICON_CANDIDATES) {
-        try {
-            const id = getAssetIDByName?.(name);
-            if (id != null) return id;
-        } catch { }
-    }
-    return { uri: VOICE_ICON_DATA_URI };
-}
+// Debug logs confirmed the badge-ARRAY patch works perfectly end to end
+// (hook fires, inVoice detected, entry unshifted with a real `{ uri }` image
+// source) — but nothing ever rendered. Comparing against a *working*
+// published plugin that does the same kind of thing (`Global Badges`,
+// plugins.obamabot.me/vendetta-plugins/globalBadges) revealed why: the
+// `icon` field on a useBadges() entry is NOT what actually gets drawn.
+// Both that plugin and Kettu's own built-in Badges core plugin
+// (src/core/plugins/badges/index.tsx) push a throwaway placeholder there
+// (`icon: "dummy"` / `icon: " _"`) and instead separately patch the JSX
+// creation of the `ProfileBadge`/`RenderedBadge` (Kettu) or
+// `ProfileBadge`/`RenderBadge` (Global Badges) components via
+// `onJsxCreate`, swapping in the *real* `source`/`label` there by matching
+// `ret.props.id`. That hook lives at `window.bunny.api.react.jsx.onJsxCreate`
+// — a true global, not something passed into vendetta-compat plugins, but
+// reachable anyway since it's just `window.bunny`, not scoped per-loader.
+const bunnyGlobal = (globalThis as any).bunny;
+const onJsxCreate: undefined | ((component: string, cb: (Component: any, ret: any) => any) => void) =
+    bunnyGlobal?.api?.react?.jsx?.onJsxCreate;
+const deleteJsxCreate: undefined | ((component: string, cb: (Component: any, ret: any) => any) => void) =
+    bunnyGlobal?.api?.react?.jsx?.deleteJsxCreate;
 
-let cachedIcon: unknown;
+const BADGE_ICON_PLACEHOLDER = "dummy";
+const badgeIdPrefix = "user-voice-show-";
+const badgeProps = new Map<string, { id: string; source: { uri: string; }; label: string; }>();
 
 function isUserInVoice(userId: string): boolean {
     try {
@@ -119,15 +122,41 @@ function isUserInVoice(userId: string): boolean {
 
 let unpatchBadges: (() => void) | null = null;
 
+const JSX_BADGE_COMPONENTS = ["ProfileBadge", "RenderedBadge", "RenderBadge"];
+
+function jsxImageSwap(_component: any, ret: any) {
+    if (!ret?.props?.id?.startsWith?.(badgeIdPrefix)) return;
+    const cached = badgeProps.get(ret.props.id);
+    if (!cached) return;
+    ret.props.source = cached.source;
+    ret.props.label = cached.label;
+    ret.props.id = cached.id;
+}
+
+function patchJsxImageSwap() {
+    if (!onJsxCreate) {
+        debugOnce("window.bunny.api.react.jsx.onJsxCreate NOT available");
+        return;
+    }
+    debugOnce("onJsxCreate available, registering image swap");
+
+    // Names differ slightly between Kettu's own Badges plugin
+    // ("ProfileBadge"/"RenderedBadge") and other third-party badge plugins
+    // ("ProfileBadge"/"RenderBadge") — register all of them, extras are harmless.
+    for (const name of JSX_BADGE_COMPONENTS) onJsxCreate(name, jsxImageSwap);
+}
+
+function unpatchJsxImageSwap() {
+    if (!deleteJsxCreate) return;
+    for (const name of JSX_BADGE_COMPONENTS) deleteJsxCreate(name, jsxImageSwap);
+}
+
 function patchBadges() {
     if (!useBadgesModule || typeof useBadgesModule.default !== "function") {
         debugOnce(`useBadges NOT found (module=${!!useBadgesModule})`);
         return;
     }
     debugOnce("useBadges found, patch installed");
-
-    cachedIcon = resolveIcon();
-    debugOnce(`icon resolved: ${cachedIcon != null ? String(cachedIcon) : "none"}`);
 
     unpatchBadges = vendetta.patcher.after("default", useBadgesModule, (args: any[], result: any) => {
         const user = args[0];
@@ -149,10 +178,16 @@ function patchBadges() {
         debugLimited(`inVoice=${inVoice} for ${userId}`);
 
         if (inVoice) {
+            const badgeId = `${badgeIdPrefix}${userId}`;
+            badgeProps.set(badgeId, {
+                id: badgeId,
+                source: { uri: VOICE_ICON_DATA_URI },
+                label: "In a voice call",
+            });
             result.unshift({
-                id: "user-voice-show.in-call",
+                id: badgeId,
                 description: "In a voice call",
-                icon: cachedIcon,
+                icon: BADGE_ICON_PLACEHOLDER,
             });
         }
     });
@@ -160,6 +195,13 @@ function patchBadges() {
 
 function onLoad() {
     debugOnce(`VoiceStateStore found: ${!!VoiceStateStore}`);
+    try {
+        patchJsxImageSwap();
+    } catch (e) {
+        logger?.error("[UserVoiceShow] failed to patch JSX image swap:", e);
+        debugOnce(`jsx patch threw: ${e}`);
+    }
+
     try {
         patchBadges();
     } catch (e) {
@@ -179,6 +221,8 @@ function onLoad() {
 function onUnload() {
     unpatchBadges?.();
     unpatchBadges = null;
+    unpatchJsxImageSwap();
+    badgeProps.clear();
     unregisterDebugCommand?.();
     unregisterDebugCommand = null;
     debugLog.length = 0;

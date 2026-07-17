@@ -4,17 +4,14 @@ A [Kettu](https://github.com/C0C0B01/Kettu) port of Vencord's [UserVoiceShow](ht
 
 ## How it works
 
-Kettu's own built-in **Badges** core plugin (`src/core/plugins/badges/index.tsx`) injects entries into a user's profile by patching the `useBadges` hook with `after("default", useBadgesModule, ...)`. This plugin uses that exact same, known-working mechanism (reached via the `vendetta`-compat `metro.findByName` / `patcher.after`) to prepend an "In a voice call" badge whenever `VoiceStateStore.getAllVoiceStates()` shows the profile's user connected somewhere.
+Two patches, both mirroring known-working badge plugins:
 
-## Status: badge logic confirmed working, icon rendering unverified
+1. `useBadges` — patched via `after("default", useBadgesModule, ...)` (the same hook Kettu's own built-in **Badges** core plugin uses, `src/core/plugins/badges/index.tsx`) to prepend an "In a voice call" entry to a user's badge array whenever `VoiceStateStore.getAllVoiceStates()` shows them connected somewhere. The entry's `icon` field is just an inert placeholder string (`"dummy"`) — on-device debug logs confirmed this part works end to end (`inVoice=true`, entry unshifted), but by itself it renders nothing.
+2. `window.bunny.api.react.jsx.onJsxCreate("ProfileBadge" / "RenderedBadge" / "RenderBadge", ...)` — the piece that actually draws the icon. Both Kettu's Badges plugin and a separate published plugin doing the same kind of thing (`Global Badges`) turn out to swap in the *real* `source`/`label` here, matched by `ret.props.id`, rather than through the `useBadges` array's `icon` field at all. `window.bunny` is a true global (set by Kettu's core at `src/index.ts`), so it's reachable even though this plugin otherwise only gets the sandboxed `vendetta` object — that's what earlier versions of this plugin were missing, which is why the badge silently never appeared despite the detection logic being correct.
 
-On-device debug logs (via `/uvsdebug`) confirmed the actual detection/patch logic works end to end: `VoiceStateStore` resolves, the `useBadges` hook fires for the right user, `inVoice` correctly comes back `true`, and the badge entry gets unshifted into the array. But with `icon: " _"` (the literal placeholder Kettu's own Badges core plugin uses internally) nothing visibly rendered.
+The image itself is a small (24×24, ~145 byte) green circle PNG embedded as a `data:` base64 URI, so it doesn't depend on finding a real Discord built-in asset name or fetching anything over the network.
 
-The likely reason: that core plugin's *actual* pixels don't come from the `icon` field in the `useBadges` array at all — they come from a separate, internal-only patch on `ProfileBadge`/`RenderedBadge`'s JSX creation (`onJsxCreate`, see `src/core/plugins/badges/index.tsx`) that swaps in a real `source: { uri }`. That API isn't reachable from external (`vendetta`-compat) plugins, so `" _"` alone is just an inert placeholder with nothing behind it.
-
-To work around this without needing that internal API, the badge's `icon` now falls back to a small (24×24, ~145 byte) green circle PNG embedded directly as a `data:` URI (`{ uri: "data:image/png;base64,..." }`) — a plain image source that shouldn't depend on Discord's own bundled asset names or any network fetch. Still unverified whether the badge tray's icon renderer actually accepts a `{ uri }` data-URI object; if it doesn't, the badge should still just fail to render silently rather than crash.
-
-If it still doesn't appear, run **`/uvsdebug`** in any channel after opening someone's profile — it posts a local (only-you-can-see-it) message with the accumulated internal log, and report back what it says.
+If the badge still doesn't appear, run **`/uvsdebug`** in any channel after opening someone's profile — it posts a local (only-you-can-see-it) message with the accumulated internal log, and report back what it says.
 
 ## Building
 
