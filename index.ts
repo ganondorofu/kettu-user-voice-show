@@ -12,7 +12,7 @@ declare const vendetta: any;
 // Bump this on every meaningful change and check it via /uvsdebug's first
 // line — GitHub raw/CDN propagation delay repeatedly made it unclear whether
 // Kettu had actually fetched the latest build after reinstalling.
-const PLUGIN_VERSION = "1.7.0";
+const PLUGIN_VERSION = "1.8.0";
 
 const logger = vendetta.logger;
 const { showToast } = vendetta.ui.toasts;
@@ -320,25 +320,44 @@ function injectIntoMemberRow(ret: any): boolean {
     return false;
 }
 
-// `findByProps("GuildMemberRow")` came back empty on-device, meaning that
-// export name doesn't exist (renamed/obfuscated differently) in this
-// Discord build. Rather than guess once more and burn another install/debug
-// round-trip, try several plausible candidates in one pass and log all of
-// them — including PlatformIndicators' *other* row target ("UserRow", used
-// for the member-list-tab variant in its source) — so whichever one exists
-// gets used, and if none do, the log at least tells us what's actually
-// available to try next.
-const MEMBER_ROW_CANDIDATES = ["GuildMemberRow", "UserRow", "MemberListItem", "GuildMember", "UserListItem"];
+// `findByProps("GuildMemberRow")` (and UserRow/MemberListItem/etc) all came
+// back empty on-device — those export names don't exist in this build.
+// `/uvssniff` (a from-scratch component-name sniffer, see
+// patchComponentSniffer below) found the *real* names instead by recording
+// every component actually rendered while browsing: profile-related
+// component names came back as `UserProfilePrimaryInfo`, `Username`,
+// `UserTagAndPronouns`, etc — no "Row"/"Member"-named component appeared
+// (that sniff was taken while viewing a profile, not the member-list
+// sidebar specifically, so a per-row component may still exist and just
+// wasn't observed yet).
+//
+// `Username` is the most promising and immediately usable target: a small,
+// likely-shared leaf component, probably used for both the profile screen
+// and message headers. It might be a plain function export (not a
+// memo/forwardRef object with `.type`), so this patches whichever shape is
+// actually found — a `.type` property if present, otherwise the bare named
+// export directly (same category of patch that worked for `useBadges`'s
+// `.default`).
+const MEMBER_ROW_CANDIDATES = ["Username", "GuildMemberRow", "UserRow", "MemberListItem", "GuildMember", "UserListItem"];
 
-function findMemberRowComponent(): { label: string; target: any; } | null {
+function findMemberRowComponent(): { label: string; target: any; prop: string; } | null {
     for (const name of MEMBER_ROW_CANDIDATES) {
         try {
             const mod = vendetta.metro.findByProps(name);
-            const exists = !!mod?.[name];
-            debugOnce(`findByProps("${name}") -> ${mod ? (exists ? "module+export found" : `module found but no .${name} (keys=${Object.keys(mod).slice(0, 8).join(",")})`) : "null"}`);
-            if (exists && typeof mod[name] === "object" && mod[name] !== null) {
-                return { label: name, target: mod[name] };
+            const exported = mod?.[name];
+            if (exported == null) {
+                debugOnce(`findByProps("${name}") -> ${mod ? `module found but no .${name} (keys=${Object.keys(mod).slice(0, 8).join(",")})` : "null"}`);
+                continue;
             }
+            if (typeof exported === "object" && typeof exported.type === "function") {
+                debugOnce(`findByProps("${name}") -> object with .type, patching .type`);
+                return { label: name, target: exported, prop: "type" };
+            }
+            if (typeof exported === "function") {
+                debugOnce(`findByProps("${name}") -> bare function, patching "${name}" on its module directly`);
+                return { label: name, target: mod, prop: name };
+            }
+            debugOnce(`findByProps("${name}") -> found but unrecognized shape (${typeof exported})`);
         } catch (e) {
             debugOnce(`findByProps("${name}") threw: ${e}`);
         }
@@ -354,19 +373,28 @@ function patchMemberRow() {
     }
     debugOnce(`${found.label} found, patching`);
 
-    unpatchMemberRow = vendetta.patcher.after("type", found.target, (args: any[], ret: any) => {
+    unpatchMemberRow = vendetta.patcher.after(found.prop, found.target, (args: any[], ret: any) => {
+        // Log the raw prop shape once — "Username" in particular might not
+        // receive a `user`/`userId` prop directly (could just be a string),
+        // in which case this whole approach needs rethinking once we see it.
+        debugOnce(`${found.label} props keys: ${args[0] ? Object.keys(args[0]).join(",") : "null/undefined"}`);
+
         const user = args[0]?.user;
-        if (!user?.id) return;
+        const userId = user?.id ?? args[0]?.userId;
+        if (!userId) {
+            debugLimitedName(`${found.label} ran but no user/userId prop found`);
+            return;
+        }
 
-        debugLimitedName(`${found.label} ran, userId=${user.id}`);
+        debugLimitedName(`${found.label} ran, userId=${userId}`);
 
-        if (!isUserInVoice(user.id)) return;
+        if (!isUserInVoice(userId)) return;
 
         try {
             const appended = injectIntoMemberRow(ret);
-            debugLimitedName(`member-row icon ${appended ? "succeeded" : "found no children array"} for ${user.id}`);
+            debugLimitedName(`icon inject ${appended ? "succeeded" : "found no children array"} for ${userId}`);
         } catch (e) {
-            debugLimitedName(`member-row icon threw: ${e}`);
+            debugLimitedName(`icon inject threw: ${e}`);
         }
     });
 }
