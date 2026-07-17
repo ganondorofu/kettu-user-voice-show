@@ -11,6 +11,9 @@ declare const vendetta: any;
 
 const logger = vendetta.logger;
 const { showToast } = vendetta.ui.toasts;
+const React = vendetta.metro.common.React;
+const ReactNative = vendetta.metro.common.ReactNative;
+const { findInReactTree } = vendetta.utils;
 
 // TEMPORARY: toasts turned out to be unreadable for this — useBadges fires on
 // every rendered avatar (message rows, member list, etc), not just when
@@ -22,6 +25,7 @@ const { showToast } = vendetta.ui.toasts;
 const debugLog: string[] = [];
 const seenOnce = new Set<string>();
 let hookCallBudget = 5;
+let nameHookCallBudget = 5;
 
 function pushDebug(msg: string) {
     debugLog.push(msg);
@@ -34,10 +38,19 @@ function debugOnce(msg: string) {
     pushDebug(msg);
 }
 
+// Separate budget from debugLimitedName below — useBadges and DisplayName
+// fire independently, and sharing one counter meant one could exhaust it
+// before the other ever logged anything useful.
 function debugLimited(msg: string) {
     if (hookCallBudget <= 0) return;
     hookCallBudget--;
-    pushDebug(msg + (hookCallBudget === 0 ? " (further hook logs suppressed)" : ""));
+    pushDebug(msg + (hookCallBudget === 0 ? " (further useBadges hook logs suppressed)" : ""));
+}
+
+function debugLimitedName(msg: string) {
+    if (nameHookCallBudget <= 0) return;
+    nameHookCallBudget--;
+    pushDebug(msg + (nameHookCallBudget === 0 ? " (further DisplayName hook logs suppressed)" : ""));
 }
 
 let unregisterDebugCommand: (() => void) | null = null;
@@ -193,6 +206,78 @@ function patchBadges() {
     });
 }
 
+// Places a small icon directly next to the display name (profile popout,
+// message headers, etc — wherever this particular component is used), which
+// is where Vencord's own UserVoiceShow shows it — as opposed to the profile
+// badge tray, which is a different, Kettu/Bunny-specific location.
+//
+// Technique borrowed from a real, published plugin doing the same kind of
+// per-name decoration (`PlatformIndicators`,
+// martinz64.github.io/vendetta-plugins/PlatformIndicators): find the module
+// exporting a `DisplayName` component via findByProps, patch it with `after`,
+// and push a new element into the rendered tree's children. The exact nested
+// `children` path it uses (`ret.props.children.props.children`) is specific
+// to that component's internal structure — kept as-is since it's copied from
+// working code, but guarded with try/catch and a findInReactTree fallback in
+// case this Discord build's structure differs slightly.
+let unpatchDisplayName: (() => void) | null = null;
+
+function buildNameIcon() {
+    return React.createElement(ReactNative.Image, {
+        key: "user-voice-show-name-icon",
+        source: { uri: VOICE_ICON_DATA_URI },
+        style: { width: 12, height: 12, marginLeft: 4, borderRadius: 6 },
+    });
+}
+
+function appendNameIcon(ret: any): boolean {
+    // Primary path: mirrors PlatformIndicators' exact structure.
+    const directChildren = ret?.props?.children?.props?.children;
+    if (Array.isArray(directChildren)) {
+        directChildren.push(buildNameIcon());
+        return true;
+    }
+    if (Array.isArray(directChildren?.[0]?.props?.children)) {
+        directChildren[0].props.children.push(buildNameIcon());
+        return true;
+    }
+
+    // Fallback: search the returned tree for the first children array that
+    // looks like a row of inline text/elements, and append there instead.
+    const container = findInReactTree(ret, (node: any) => Array.isArray(node?.props?.children) && node.props.children.length > 0);
+    if (container) {
+        container.props.children.push(buildNameIcon());
+        return true;
+    }
+
+    return false;
+}
+
+function patchDisplayName() {
+    const DisplayNameModule = vendetta.metro.findByProps("DisplayName");
+    if (!DisplayNameModule?.DisplayName) {
+        debugOnce("DisplayName module NOT found — name-icon feature unavailable (badge tray still applies)");
+        return;
+    }
+    debugOnce("DisplayName module found, patching");
+
+    unpatchDisplayName = vendetta.patcher.after("DisplayName", DisplayNameModule, (args: any[], ret: any) => {
+        const user = args[0]?.user;
+        if (!user?.id) return;
+
+        debugLimitedName(`DisplayName ran, userId=${user.id}`);
+
+        if (!isUserInVoice(user.id)) return;
+
+        try {
+            const appended = appendNameIcon(ret);
+            debugLimitedName(`name-icon append ${appended ? "succeeded" : "found no children array"} for ${user.id}`);
+        } catch (e) {
+            debugLimitedName(`name-icon append threw: ${e}`);
+        }
+    });
+}
+
 function onLoad() {
     debugOnce(`VoiceStateStore found: ${!!VoiceStateStore}`);
     try {
@@ -210,6 +295,13 @@ function onLoad() {
     }
 
     try {
+        patchDisplayName();
+    } catch (e) {
+        logger?.error("[UserVoiceShow] failed to patch DisplayName:", e);
+        debugOnce(`DisplayName patch threw: ${e}`);
+    }
+
+    try {
         registerDebugCommand();
     } catch (e) {
         logger?.error("[UserVoiceShow] failed to register /uvsdebug:", e);
@@ -223,9 +315,12 @@ function onUnload() {
     unpatchBadges = null;
     unpatchJsxImageSwap();
     badgeProps.clear();
+    unpatchDisplayName?.();
+    unpatchDisplayName = null;
     unregisterDebugCommand?.();
     unregisterDebugCommand = null;
     debugLog.length = 0;
     seenOnce.clear();
     hookCallBudget = 5;
+    nameHookCallBudget = 5;
 }
