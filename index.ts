@@ -72,15 +72,18 @@ const useBadgesModule = vendetta.metro.findByName("useBadges", false);
 
 const ICON_CANDIDATES = ["ic_call", "ic_call_24px", "Phone", "PhoneCall", "VoiceChannel"];
 
-// Kettu's own Badges core plugin (src/core/plugins/badges/index.tsx) sets
-// `icon: " _"` (a literal placeholder string, not a real asset id) on every
-// badge it injects via this exact same mechanism, and that visibly works in
-// the shipped app. A previous version of this plugin left `icon` as
-// `undefined` when none of the ICON_CANDIDATES resolved via
-// getAssetIDByName — which is the likely reason the badge silently failed to
-// render even though the patch logic itself ran correctly (confirmed via
-// debug toasts). Falling back to that same placeholder now.
-const FALLBACK_ICON = " _";
+// A tiny (24x24, 145 byte) solid green circle PNG, embedded as a data: URI so
+// this never depends on finding the right built-in Discord asset name or
+// hosting/fetching an external image. Debug logs confirmed the badge-array
+// patch itself works correctly (hook runs, inVoice detected, entry unshifted)
+// with `icon: " _"` — the literal placeholder Kettu's own Badges core plugin
+// uses — but nothing visibly rendered. That placeholder isn't a real image
+// source; the core plugin's *actual* pixels come from a separate internal-
+// only onJsxCreate patch on ProfileBadge/RenderedBadge that isn't reachable
+// from this vendetta-compat plugin. Passing a real `{ uri }` image source
+// directly should render regardless of that.
+const VOICE_ICON_DATA_URI =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAWElEQVR4nO3Tyw0AIAhEQXqxK/uzTi1AJHxWI9FNuL45QXTDSquduy1RCGaNmxBvXIVE4yKCii+R3AA6PiEfeADI/wdHACTCxlGIGI8iqrgXMcW1WCiK2gA+FDGuAwEtHAAAAABJRU5ErkJggg==";
 
 function resolveIcon(): unknown {
     for (const name of ICON_CANDIDATES) {
@@ -89,7 +92,7 @@ function resolveIcon(): unknown {
             if (id != null) return id;
         } catch { }
     }
-    return FALLBACK_ICON;
+    return { uri: VOICE_ICON_DATA_URI };
 }
 
 let cachedIcon: unknown;
