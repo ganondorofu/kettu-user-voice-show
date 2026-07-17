@@ -12,7 +12,7 @@ declare const vendetta: any;
 // Bump this on every meaningful change and check it via /uvsdebug's first
 // line — GitHub raw/CDN propagation delay repeatedly made it unclear whether
 // Kettu had actually fetched the latest build after reinstalling.
-const PLUGIN_VERSION = "1.6.0";
+const PLUGIN_VERSION = "1.7.0";
 
 const logger = vendetta.logger;
 const { showToast } = vendetta.ui.toasts;
@@ -59,6 +59,47 @@ function debugLimitedName(msg: string) {
 }
 
 let unregisterDebugCommand: (() => void) | null = null;
+let unregisterSniffCommand: (() => void) | null = null;
+
+// A real-DevTools-free way to find actual component names: patch the raw
+// JSX-runtime functions themselves — the same underlying primitive
+// `window.bunny.api.react.jsx.onJsxCreate` is built on (see
+// src/lib/api/react/jsx.ts's `patchJsx`) — and just record every distinct
+// `Component.name` that gets created while some screen is open. Query the
+// results afterwards with `/uvssniff <filter>` instead of needing a live
+// react-devtools connection (which failed to attach reliably on-device).
+const seenComponentNames = new Set<string>();
+let unpatchSniffer: (() => void) | null = null;
+
+function patchComponentSniffer() {
+    const jsxRuntime = vendetta.metro.findByProps("jsx", "jsxs");
+    if (!jsxRuntime) {
+        debugOnce("jsx runtime (findByProps('jsx','jsxs')) NOT found — /uvssniff unavailable");
+        return;
+    }
+
+    const record = (args: any[]) => {
+        const Component = args[0];
+        const name = typeof Component === "function" ? Component.name
+            : typeof Component === "string" ? `<${Component}>`
+                : undefined;
+        if (name) seenComponentNames.add(name);
+    };
+
+    const unpatchJsx = typeof jsxRuntime.jsx === "function" ? vendetta.patcher.after("jsx", jsxRuntime, record) : null;
+    const unpatchJsxs = typeof jsxRuntime.jsxs === "function" ? vendetta.patcher.after("jsxs", jsxRuntime, record) : null;
+
+    if (!unpatchJsx && !unpatchJsxs) {
+        debugOnce("jsx runtime found but neither .jsx nor .jsxs is a function — /uvssniff unavailable");
+        return;
+    }
+    debugOnce("component sniffer active — browse a screen, then run /uvssniff <filter>");
+
+    unpatchSniffer = () => {
+        unpatchJsx?.();
+        unpatchJsxs?.();
+    };
+}
 
 function registerDebugCommand() {
     const messageUtil = vendetta.metro.findByProps("sendBotMessage");
@@ -73,6 +114,22 @@ function registerDebugCommand() {
         execute(_args: any[], ctx: any) {
             const body = debugLog.length ? debugLog.join("\n") : "(no debug entries yet — open someone's profile / a member list first)";
             messageUtil.sendBotMessage(ctx.channel.id, `UserVoiceShow v${PLUGIN_VERSION}\n${body}`);
+        },
+    });
+
+    unregisterSniffCommand = vendetta.commands.registerCommand({
+        name: "uvssniff",
+        description: "List rendered React component names matching a filter (case-insensitive substring)",
+        options: [{ name: "filter", type: 3 /* STRING */, description: "e.g. member, row, user", required: false }],
+        execute(args: any[], ctx: any) {
+            const filter = (args[0]?.value ?? "").toString().toLowerCase();
+            const names = [...seenComponentNames]
+                .filter(n => !filter || n.toLowerCase().includes(filter))
+                .sort();
+            const body = names.length
+                ? `${names.length} match(es) out of ${seenComponentNames.size} seen:\n${names.join(", ")}`
+                : `No matches out of ${seenComponentNames.size} component names seen so far. Browse the screen you care about first, then retry.`;
+            messageUtil.sendBotMessage(ctx.channel.id, `UserVoiceShow v${PLUGIN_VERSION} — /uvssniff ${filter || "(all)"}\n${body}`);
         },
     });
 }
@@ -338,6 +395,13 @@ function onLoad() {
     }
 
     try {
+        patchComponentSniffer();
+    } catch (e) {
+        logger?.error("[UserVoiceShow] failed to patch component sniffer:", e);
+        debugOnce(`sniffer patch threw: ${e}`);
+    }
+
+    try {
         registerDebugCommand();
     } catch (e) {
         logger?.error("[UserVoiceShow] failed to register /uvsdebug:", e);
@@ -353,8 +417,13 @@ function onUnload() {
     badgeProps.clear();
     unpatchMemberRow?.();
     unpatchMemberRow = null;
+    unpatchSniffer?.();
+    unpatchSniffer = null;
+    seenComponentNames.clear();
     unregisterDebugCommand?.();
     unregisterDebugCommand = null;
+    unregisterSniffCommand?.();
+    unregisterSniffCommand = null;
     debugLog.length = 0;
     seenOnce.clear();
     hookCallBudget = 5;

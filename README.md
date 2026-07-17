@@ -17,11 +17,11 @@ This ships **two independent indicators**, both active at once:
 
 ## Status
 
-The badge-tray indicator is confirmed working on-device. The member-list "🔊" indicator is still being narrowed down — see version history in commits for what's been ruled out so far.
+The badge-tray indicator is confirmed working on-device. The member-list "🔊" indicator is still being narrowed down — patching `GuildMemberRow`/`UserRow`/etc all installed without error, but on-device logs showed the patched functions never actually fire when a member list renders, meaning none of those names are the real component. Live inspection via React DevTools (`ws://<pc-ip>:8097`, Settings → Developer → DevTools URL) didn't connect reliably either.
 
-**`/uvsdebug`'s first line is now the plugin version** (e.g. `UserVoiceShow v1.6.0`) — check this first after reinstalling, since GitHub raw/CDN propagation delay has repeatedly made it unclear whether Kettu actually fetched the latest build. If the version shown is stale, wait a bit and reinstall again before reporting a bug.
+**`/uvssniff [filter]`** works around that: it patches the raw JSX-runtime `jsx`/`jsxs` functions (the same underlying primitive `onJsxCreate` is built on) to record every distinct component name actually rendered, with no react-devtools connection needed. Browse the screen you care about (e.g. open a member list), then run `/uvssniff member` (or `row`, `user`, or no filter at all for everything seen) to get the real names as a local message. Whatever it turns up for the member list is what the next version's patch target should be.
 
-Run `/uvsdebug` in any channel after opening someone's profile / viewing a member list to get the accumulated internal log (a local, only-you-can-see-it message) — it now also logs every candidate name it tried and whether each one's module/export was found, so a failed attempt still tells us what's actually available for the next try.
+**`/uvsdebug`'s and `/uvssniff`'s first line is the plugin version** (e.g. `UserVoiceShow v1.7.0`) — check this first after reinstalling, since GitHub raw/CDN propagation delay has repeatedly made it unclear whether Kettu actually fetched the latest build. If the version shown is stale, wait a bit and reinstall again before reporting a bug.
 
 ## Building
 
