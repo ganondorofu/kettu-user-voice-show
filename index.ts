@@ -45,6 +45,24 @@ function isUserInVoice(userId: string): boolean {
 const { getAssetIDByName } = vendetta.ui.assets;
 const voiceIconAsset = getAssetIDByName("voice_bar_speaker_new");
 
+// The badge tray's ProfileBadge/RenderedBadge components were originally
+// built to accept custom badges' remote `{ uri }` image sources (see Kettu's
+// own Badges core plugin, which always wraps badge.url that way) — passing a
+// bare bundled-asset number through as `source` there rendered nothing,
+// even though passing that same bare number directly to a plain
+// `ReactNative.Image` (as the name icon below does, and as Kettu's own
+// AssetBrowser does) works fine. Resolving it to a real `{ uri }` object via
+// RN's own `Image.resolveAssetSource` makes it a normal image source
+// regardless of which shape the consuming component expects.
+const voiceIconSource = (() => {
+    try {
+        const resolved = ReactNative.Image?.resolveAssetSource?.(voiceIconAsset);
+        return resolved?.uri ? { uri: resolved.uri } : voiceIconAsset;
+    } catch {
+        return voiceIconAsset;
+    }
+})();
+
 // --- Badge tray -------------------------------------------------------
 //
 // Mirrors Kettu's own built-in Badges core plugin
@@ -102,7 +120,7 @@ function patchBadges() {
         const badgeId = `${badgeIdPrefix}${userId}`;
         badgeProps.set(badgeId, {
             id: badgeId,
-            source: voiceIconAsset,
+            source: voiceIconSource,
             label: "In a voice call",
         });
         result.unshift({
@@ -180,6 +198,47 @@ function patchNameIcon() {
     unpatchNameIcon = () => memberRowUnpatchers.splice(0).forEach(u => u());
 }
 
+// --- Member list (guild sidebar, DM list, etc) --------------------------
+//
+// `findByProps("GuildMemberRow")`/`findByProps("UserRow")`/`findByName(...)`
+// all either came back empty or found something that never actually fired
+// when patched — those export names/lookups don't correspond to what's
+// really rendered in this build. `findByTypeName` succeeded for the profile
+// screen's `UserProfileContent` (it matches by the *rendered element's* type
+// name rather than a module export key), so the member list uses the same
+// kind of search: `findByTypeNameAll("UserRow")` returns *every* module
+// exporting a component whose rendered name is "UserRow" (there can be more
+// than one across a bundle), and each one gets patched — covering the guild
+// member sidebar and DM list regardless of which module actually backs the
+// screen currently open. Technique adapted from `PlatformIndicators`, which
+// does the same `findByTypeNameAll("UserRow")` sweep for its own member-list
+// icons.
+let unpatchMemberList: (() => void) | null = null;
+
+function injectIntoRow(ret: any): boolean {
+    const row = findInReactTree(ret, (n: any) => n?.props?.style?.flexDirection === "row" && Array.isArray(n?.props?.children));
+    if (row) {
+        row.props.children.splice(2, 0, buildVoiceIndicator());
+        return true;
+    }
+    return appendVoiceIndicator(ret);
+}
+
+function patchMemberList() {
+    const userRows: any[] = vendetta.metro.findByTypeNameAll?.("UserRow") ?? [];
+    const unpatchers = userRows.map(userRow => vendetta.patcher.after("type", userRow, (args: any[], ret: any) => {
+        const userId = args[0]?.user?.id ?? args[0]?.userId;
+        if (!userId || !isUserInVoice(userId)) return;
+        try {
+            injectIntoRow(ret);
+        } catch (e) {
+            logger?.error("[UserVoiceShow] failed to append member-list icon:", e);
+        }
+    }));
+
+    unpatchMemberList = () => unpatchers.forEach(u => u());
+}
+
 function onLoad() {
     try {
         patchJsxImageSwap();
@@ -193,6 +252,12 @@ function onLoad() {
     } catch (e) {
         logger?.error("[UserVoiceShow] failed to patch name icon:", e);
     }
+
+    try {
+        patchMemberList();
+    } catch (e) {
+        logger?.error("[UserVoiceShow] failed to patch member list:", e);
+    }
 }
 
 function onUnload() {
@@ -202,4 +267,6 @@ function onUnload() {
     badgeProps.clear();
     unpatchNameIcon?.();
     unpatchNameIcon = null;
+    unpatchMemberList?.();
+    unpatchMemberList = null;
 }
