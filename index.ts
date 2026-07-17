@@ -128,7 +128,23 @@ function patchNameIcon() {
 // containing the original label plus the icon, instead of touching
 // `props.children` at all. Both are tried here since which one applies
 // depends on whether this build's member list uses the redesigned UI.
+const VOICE_ICON_KEY = "user-voice-show-icon";
+
+// Guards against adding the icon twice to the same render — belt-and-braces
+// alongside the reference-dedupe in patchMemberList below, in case two
+// distinct UserRow implementations legitimately both fire for what's
+// visually the same row (e.g. one wrapping the other).
+function alreadyHasIcon(node: any): boolean {
+    if (!node) return false;
+    if (node.key === VOICE_ICON_KEY) return true;
+    const children = node.props?.children;
+    if (Array.isArray(children)) return children.some(alreadyHasIcon);
+    return alreadyHasIcon(node.props?.label);
+}
+
 function injectIntoRow(ret: any): boolean {
+    if (alreadyHasIcon(ret)) return false;
+
     if (ret?.props && "label" in ret.props) {
         ret.props.label = React.createElement(
             ReactNative.View,
@@ -148,7 +164,11 @@ function injectIntoRow(ret: any): boolean {
 }
 
 function patchMemberList() {
-    const userRows: any[] = vendetta.metro.findByTypeNameAll?.("UserRow") ?? [];
+    // findByTypeNameAll can return the same underlying component object more
+    // than once (aliased under multiple module ids) — patching it twice
+    // would wrap it twice, firing the injection callback (and so adding the
+    // icon) twice per actual render. Dedupe by reference first.
+    const userRows: any[] = [...new Set<any>(vendetta.metro.findByTypeNameAll?.("UserRow") ?? [])];
     for (const userRow of userRows) {
         unpatchers.push(vendetta.patcher.after("type", userRow, (args: any[], ret: any) => {
             const userId = args[0]?.user?.id ?? args[0]?.userId;
