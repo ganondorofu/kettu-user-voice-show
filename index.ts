@@ -206,74 +206,79 @@ function patchBadges() {
     });
 }
 
-// Places a small icon directly next to the display name (profile popout,
-// message headers, etc — wherever this particular component is used), which
-// is where Vencord's own UserVoiceShow shows it — as opposed to the profile
-// badge tray, which is a different, Kettu/Bunny-specific location.
+// Places a small "🔊" indicator in the member list row, next to the
+// username — closer to where Vencord's own UserVoiceShow shows it than the
+// profile-only badge tray above.
 //
-// Technique borrowed from a real, published plugin doing the same kind of
-// per-name decoration (`PlatformIndicators`,
-// martinz64.github.io/vendetta-plugins/PlatformIndicators): find the module
-// exporting a `DisplayName` component via findByProps, patch it with `after`,
-// and push a new element into the rendered tree's children. The exact nested
-// `children` path it uses (`ret.props.children.props.children`) is specific
-// to that component's internal structure — kept as-is since it's copied from
-// working code, but guarded with try/catch and a findInReactTree fallback in
-// case this Discord build's structure differs slightly.
-let unpatchDisplayName: (() => void) | null = null;
+// An earlier version of this patched `findByProps("DisplayName")`'s
+// `DisplayName` export directly via `after`, but on-device logs showed the
+// patched function simply never got called (zero hook fires despite the
+// module being found) — almost certainly because whatever renders it holds
+// its own destructured reference to the *original* function captured before
+// this plugin loaded, the same class of bug behind an earlier issue where
+// this plugin's sibling project couldn't intercept the user's own outgoing
+// messages via a similarly-late property patch.
+//
+// This uses a different, sturdier target instead: `GuildMemberRow`, patched
+// via `after("type", ...)` rather than a bare named export — `.type` here is
+// the actual function React invokes to render each element (same category of
+// patch that worked for the badge tray's `useBadges` `.default` and the
+// message-long-press action sheet's `.default`, both confirmed working
+// on-device), so it should be substituted consistently for every render
+// rather than only for callers that still hold the pre-patch reference.
+// Technique adapted from the published `PlatformIndicators` plugin
+// (martinz64.github.io/vendetta-plugins/PlatformIndicators), which does the
+// same kind of per-row icon injection into `GuildMemberRow`.
+let unpatchMemberRow: (() => void) | null = null;
 
-function buildNameIcon() {
-    return React.createElement(ReactNative.Image, {
-        key: "user-voice-show-name-icon",
-        source: { uri: VOICE_ICON_DATA_URI },
-        style: { width: 12, height: 12, marginLeft: 4, borderRadius: 6 },
-    });
+function buildVoiceIndicator() {
+    return React.createElement(
+        ReactNative.Text,
+        { key: "user-voice-show-member-row-icon", style: { fontSize: 12, marginLeft: 4 } },
+        "🔊",
+    );
 }
 
-function appendNameIcon(ret: any): boolean {
-    // Primary path: mirrors PlatformIndicators' exact structure.
-    const directChildren = ret?.props?.children?.props?.children;
-    if (Array.isArray(directChildren)) {
-        directChildren.push(buildNameIcon());
-        return true;
-    }
-    if (Array.isArray(directChildren?.[0]?.props?.children)) {
-        directChildren[0].props.children.push(buildNameIcon());
+function injectIntoMemberRow(ret: any): boolean {
+    // PlatformIndicators finds the row container by its flex-row style and
+    // splices a new element in at index 2.
+    const row = findInReactTree(ret, (node: any) => node?.props?.style?.flexDirection === "row" && Array.isArray(node?.props?.children));
+    if (row) {
+        row.props.children.splice(2, 0, buildVoiceIndicator());
         return true;
     }
 
-    // Fallback: search the returned tree for the first children array that
-    // looks like a row of inline text/elements, and append there instead.
+    // Fallback: any children array at all.
     const container = findInReactTree(ret, (node: any) => Array.isArray(node?.props?.children) && node.props.children.length > 0);
     if (container) {
-        container.props.children.push(buildNameIcon());
+        container.props.children.push(buildVoiceIndicator());
         return true;
     }
 
     return false;
 }
 
-function patchDisplayName() {
-    const DisplayNameModule = vendetta.metro.findByProps("DisplayName");
-    if (!DisplayNameModule?.DisplayName) {
-        debugOnce("DisplayName module NOT found — name-icon feature unavailable (badge tray still applies)");
+function patchMemberRow() {
+    const mod = vendetta.metro.findByProps("GuildMemberRow");
+    if (!mod?.GuildMemberRow) {
+        debugOnce("GuildMemberRow NOT found — member-list indicator unavailable (badge tray still applies)");
         return;
     }
-    debugOnce("DisplayName module found, patching");
+    debugOnce("GuildMemberRow found, patching");
 
-    unpatchDisplayName = vendetta.patcher.after("DisplayName", DisplayNameModule, (args: any[], ret: any) => {
+    unpatchMemberRow = vendetta.patcher.after("type", mod.GuildMemberRow, (args: any[], ret: any) => {
         const user = args[0]?.user;
         if (!user?.id) return;
 
-        debugLimitedName(`DisplayName ran, userId=${user.id}`);
+        debugLimitedName(`GuildMemberRow ran, userId=${user.id}`);
 
         if (!isUserInVoice(user.id)) return;
 
         try {
-            const appended = appendNameIcon(ret);
-            debugLimitedName(`name-icon append ${appended ? "succeeded" : "found no children array"} for ${user.id}`);
+            const appended = injectIntoMemberRow(ret);
+            debugLimitedName(`member-row icon ${appended ? "succeeded" : "found no children array"} for ${user.id}`);
         } catch (e) {
-            debugLimitedName(`name-icon append threw: ${e}`);
+            debugLimitedName(`member-row icon threw: ${e}`);
         }
     });
 }
@@ -295,10 +300,10 @@ function onLoad() {
     }
 
     try {
-        patchDisplayName();
+        patchMemberRow();
     } catch (e) {
-        logger?.error("[UserVoiceShow] failed to patch DisplayName:", e);
-        debugOnce(`DisplayName patch threw: ${e}`);
+        logger?.error("[UserVoiceShow] failed to patch GuildMemberRow:", e);
+        debugOnce(`GuildMemberRow patch threw: ${e}`);
     }
 
     try {
@@ -315,8 +320,8 @@ function onUnload() {
     unpatchBadges = null;
     unpatchJsxImageSwap();
     badgeProps.clear();
-    unpatchDisplayName?.();
-    unpatchDisplayName = null;
+    unpatchMemberRow?.();
+    unpatchMemberRow = null;
     unregisterDebugCommand?.();
     unregisterDebugCommand = null;
     debugLog.length = 0;
