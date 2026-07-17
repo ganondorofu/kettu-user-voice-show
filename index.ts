@@ -137,9 +137,13 @@ function patchBadges() {
         // actually has, so we can confirm/fix how userId is extracted above.
         debugOnce(`user arg keys: ${user ? Object.keys(user).join(",") : "null/undefined"}`);
 
-        debugLimited(`hook ran, userId=${userId ?? "?"}, resultType=${Array.isArray(result) ? "array" : typeof result}`);
-
+        // Only spend the limited debug budget on calls that actually have a
+        // userId — useBadges also fires many times with no user data yet
+        // (loading placeholders), and those were burning the budget before a
+        // real profile was ever opened, hiding the inVoice=... line entirely.
         if (!userId || !Array.isArray(result)) return;
+
+        debugLimited(`hook ran, userId=${userId}, resultType=array`);
 
         const inVoice = isUserInVoice(userId);
         debugLimited(`inVoice=${inVoice} for ${userId}`);
