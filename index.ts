@@ -9,6 +9,11 @@
 // (any guild, or a DM/group call), even if it's not one you can see/join.
 declare const vendetta: any;
 
+// Bump this on every meaningful change and check it via /uvsdebug's first
+// line — GitHub raw/CDN propagation delay repeatedly made it unclear whether
+// Kettu had actually fetched the latest build after reinstalling.
+const PLUGIN_VERSION = "1.6.0";
+
 const logger = vendetta.logger;
 const { showToast } = vendetta.ui.toasts;
 const React = vendetta.metro.common.React;
@@ -66,8 +71,8 @@ function registerDebugCommand() {
         name: "uvsdebug",
         description: "Show UserVoiceShow's debug log",
         execute(_args: any[], ctx: any) {
-            const content = debugLog.length ? debugLog.join("\n") : "(no debug entries yet — open someone's profile first)";
-            messageUtil.sendBotMessage(ctx.channel.id, content);
+            const body = debugLog.length ? debugLog.join("\n") : "(no debug entries yet — open someone's profile / a member list first)";
+            messageUtil.sendBotMessage(ctx.channel.id, `UserVoiceShow v${PLUGIN_VERSION}\n${body}`);
         },
     });
 }
@@ -258,19 +263,45 @@ function injectIntoMemberRow(ret: any): boolean {
     return false;
 }
 
+// `findByProps("GuildMemberRow")` came back empty on-device, meaning that
+// export name doesn't exist (renamed/obfuscated differently) in this
+// Discord build. Rather than guess once more and burn another install/debug
+// round-trip, try several plausible candidates in one pass and log all of
+// them — including PlatformIndicators' *other* row target ("UserRow", used
+// for the member-list-tab variant in its source) — so whichever one exists
+// gets used, and if none do, the log at least tells us what's actually
+// available to try next.
+const MEMBER_ROW_CANDIDATES = ["GuildMemberRow", "UserRow", "MemberListItem", "GuildMember", "UserListItem"];
+
+function findMemberRowComponent(): { label: string; target: any; } | null {
+    for (const name of MEMBER_ROW_CANDIDATES) {
+        try {
+            const mod = vendetta.metro.findByProps(name);
+            const exists = !!mod?.[name];
+            debugOnce(`findByProps("${name}") -> ${mod ? (exists ? "module+export found" : `module found but no .${name} (keys=${Object.keys(mod).slice(0, 8).join(",")})`) : "null"}`);
+            if (exists && typeof mod[name] === "object" && mod[name] !== null) {
+                return { label: name, target: mod[name] };
+            }
+        } catch (e) {
+            debugOnce(`findByProps("${name}") threw: ${e}`);
+        }
+    }
+    return null;
+}
+
 function patchMemberRow() {
-    const mod = vendetta.metro.findByProps("GuildMemberRow");
-    if (!mod?.GuildMemberRow) {
-        debugOnce("GuildMemberRow NOT found — member-list indicator unavailable (badge tray still applies)");
+    const found = findMemberRowComponent();
+    if (!found) {
+        debugOnce("No member-row component found from any candidate — member-list indicator unavailable (badge tray still applies)");
         return;
     }
-    debugOnce("GuildMemberRow found, patching");
+    debugOnce(`${found.label} found, patching`);
 
-    unpatchMemberRow = vendetta.patcher.after("type", mod.GuildMemberRow, (args: any[], ret: any) => {
+    unpatchMemberRow = vendetta.patcher.after("type", found.target, (args: any[], ret: any) => {
         const user = args[0]?.user;
         if (!user?.id) return;
 
-        debugLimitedName(`GuildMemberRow ran, userId=${user.id}`);
+        debugLimitedName(`${found.label} ran, userId=${user.id}`);
 
         if (!isUserInVoice(user.id)) return;
 
@@ -312,7 +343,7 @@ function onLoad() {
         logger?.error("[UserVoiceShow] failed to register /uvsdebug:", e);
     }
 
-    showToast?.("UserVoiceShow loaded — run /uvsdebug after viewing a profile to see debug info");
+    showToast?.(`UserVoiceShow v${PLUGIN_VERSION} loaded — run /uvsdebug after viewing a profile/member list to see debug info`);
 }
 
 function onUnload() {

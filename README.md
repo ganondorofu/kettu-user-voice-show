@@ -9,7 +9,7 @@ This ships **two independent indicators**, both active at once:
 
 ## How it works
 
-**Member list icon** — patches `GuildMemberRow` (found via `findByProps`) with `after("type", ...)`, and splices a `Text("🔊")` element into the row. An earlier version instead patched `findByProps("DisplayName")`'s bare named export, but on-device logs showed that patched function never actually got called — almost certainly because whatever renders it holds its own reference to the *original* function, captured before this plugin loaded (the same class of bug as an earlier issue in this plugin's sibling project, where a late property patch failed to intercept the user's own outgoing messages). `GuildMemberRow.type` is a sturdier target: it's the same category of patch (substituting the actual function React invokes at render time) that already works for the badge tray's `useBadges().default` and the message-action-sheet's `.default` elsewhere in this project's sibling plugin. Technique adapted from the published `PlatformIndicators` plugin (martinz64.github.io/vendetta-plugins/PlatformIndicators), which does the same kind of per-row icon injection.
+**Member list icon** — tries several candidate export names (`GuildMemberRow`, `UserRow`, `MemberListItem`, `GuildMember`, `UserListItem`) via `findByProps`, since on-device logs showed `GuildMemberRow` specifically doesn't exist under that name in the current build. Whichever one is found gets patched with `after("type", ...)` and a `Text("🔊")` element spliced into the row. An earlier version instead patched `findByProps("DisplayName")`'s bare named export, but on-device logs showed that patched function never actually got called — almost certainly because whatever renders it holds its own reference to the *original* function, captured before this plugin loaded (the same class of bug as an earlier issue in this plugin's sibling project, where a late property patch failed to intercept the user's own outgoing messages). Patching `.type` on a found component is a sturdier target: it's the same category of patch (substituting the actual function React invokes at render time) that already works for the badge tray's `useBadges().default` and the message-action-sheet's `.default` elsewhere in this project's sibling plugin. Technique adapted from the published `PlatformIndicators` plugin (martinz64.github.io/vendetta-plugins/PlatformIndicators), which does the same kind of per-row icon injection into `GuildMemberRow`/`UserRow`.
 
 **Badge tray** — two patches, mirroring Kettu's own built-in **Badges** core plugin (`src/core/plugins/badges/index.tsx`):
 1. `useBadges` — patched via `after("default", useBadgesModule, ...)` to prepend an "In a voice call" entry to a user's badge array. The entry's `icon` field is just an inert placeholder string (`"dummy"`).
@@ -17,9 +17,11 @@ This ships **two independent indicators**, both active at once:
 
 ## Status
 
-The badge-tray indicator is confirmed working on-device. The member-list "🔊" indicator is new and only checked against a Node.js mock of `findByProps("GuildMemberRow")` + `patcher.after("type", ...)` — copied from PlatformIndicators' real (working) code, but this Discord build's exact component structure hasn't been confirmed live yet.
+The badge-tray indicator is confirmed working on-device. The member-list "🔊" indicator is still being narrowed down — see version history in commits for what's been ruled out so far.
 
-If either indicator doesn't appear, run **`/uvsdebug`** in any channel after opening someone's profile / viewing a member list — it posts a local (only-you-can-see-it) message with the accumulated internal log, and report back what it says.
+**`/uvsdebug`'s first line is now the plugin version** (e.g. `UserVoiceShow v1.6.0`) — check this first after reinstalling, since GitHub raw/CDN propagation delay has repeatedly made it unclear whether Kettu actually fetched the latest build. If the version shown is stale, wait a bit and reinstall again before reporting a bug.
+
+Run `/uvsdebug` in any channel after opening someone's profile / viewing a member list to get the accumulated internal log (a local, only-you-can-see-it message) — it now also logs every candidate name it tried and whether each one's module/export was found, so a failed attempt still tells us what's actually available for the next try.
 
 ## Building
 
