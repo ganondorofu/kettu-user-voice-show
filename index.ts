@@ -12,7 +12,7 @@ declare const vendetta: any;
 // Bump this on every meaningful change and check it via /uvsdebug's first
 // line — GitHub raw/CDN propagation delay repeatedly made it unclear whether
 // Kettu had actually fetched the latest build after reinstalling.
-const PLUGIN_VERSION = "1.9.0";
+const PLUGIN_VERSION = "2.1.0";
 
 const logger = vendetta.logger;
 const { showToast } = vendetta.ui.toasts;
@@ -268,154 +268,113 @@ function patchBadges() {
     });
 }
 
-// Places a small "🔊" indicator in the member list row, next to the
-// username — closer to where Vencord's own UserVoiceShow shows it than the
-// profile-only badge tray above.
+// Places a small "🔊" indicator right next to the username — closer to
+// where Vencord's own UserVoiceShow shows it than the profile-only badge
+// tray above.
 //
-// An earlier version of this patched `findByProps("DisplayName")`'s
-// `DisplayName` export directly via `after`, but on-device logs showed the
-// patched function simply never got called (zero hook fires despite the
-// module being found) — almost certainly because whatever renders it holds
-// its own destructured reference to the *original* function captured before
-// this plugin loaded, the same class of bug behind an earlier issue where
-// this plugin's sibling project couldn't intercept the user's own outgoing
-// messages via a similarly-late property patch.
-//
-// This uses a different, sturdier target instead: `GuildMemberRow`, patched
-// via `after("type", ...)` rather than a bare named export — `.type` here is
-// the actual function React invokes to render each element (same category of
-// patch that worked for the badge tray's `useBadges` `.default` and the
-// message-long-press action sheet's `.default`, both confirmed working
-// on-device), so it should be substituted consistently for every render
-// rather than only for callers that still hold the pre-patch reference.
-// Technique adapted from the published `PlatformIndicators` plugin
-// (martinz64.github.io/vendetta-plugins/PlatformIndicators), which does the
-// same kind of per-row icon injection into `GuildMemberRow`.
+// Both `findByProps("Username")` AND `findByName("Username", false)` came
+// back null on-device, even though `/uvssniff` proved a component whose
+// *function name* is literally "Username" really does render. Reading the
+// full (not just excerpted) source of the published `PlatformIndicators`
+// plugin explained why, and revealed the actual working technique: for its
+// profile-screen icon, it does *no* module-registry lookup for the inner
+// components at all. It finds the outer `UserProfileContent` via
+// `findByTypeName` (a different search than findByProps/findByName — matches
+// by the *rendered element's* type name), patches its `.type`, and then digs
+// through that specific render's *actual output tree* with `findInReactTree`
+// to locate the nested `PrimaryInfo` → `UserProfilePrimaryInfo` → `DisplayName`
+// elements one level at a time, patching each newly-found one's `.type` in
+// turn. Because each target is found dynamically from a real render's output
+// rather than searched for in the module registry, it works even for
+// components that were never separately exported anywhere — which lines up
+// with why `findByProps`/`findByName` both drew a blank on "Username" (it
+// isn't independently exported), while `/uvssniff` (which reads names off
+// already-rendered elements, not the module registry) found it fine.
+// `/uvssniff` separately confirmed `UserProfilePrimaryInfo` itself renders in
+// this build, so the same chain — down to `Username` instead of
+// `DisplayName`, since that's what this build actually calls it — is used
+// here.
 let unpatchMemberRow: (() => void) | null = null;
 
 function buildVoiceIndicator() {
     return React.createElement(
         ReactNative.Text,
-        { key: "user-voice-show-member-row-icon", style: { fontSize: 12, marginLeft: 4 } },
+        { key: "user-voice-show-username-icon", style: { fontSize: 12, marginLeft: 4 } },
         "🔊",
     );
 }
 
-function injectIntoMemberRow(ret: any): boolean {
-    // PlatformIndicators finds the row container by its flex-row style and
-    // splices a new element in at index 2.
-    const row = findInReactTree(ret, (node: any) => node?.props?.style?.flexDirection === "row" && Array.isArray(node?.props?.children));
-    if (row) {
-        row.props.children.splice(2, 0, buildVoiceIndicator());
+function appendVoiceIndicator(childrenHost: any): boolean {
+    if (Array.isArray(childrenHost?.props?.children)) {
+        childrenHost.props.children.push(buildVoiceIndicator());
         return true;
     }
-
-    // Fallback: any children array at all.
-    const container = findInReactTree(ret, (node: any) => Array.isArray(node?.props?.children) && node.props.children.length > 0);
-    if (container) {
-        container.props.children.push(buildVoiceIndicator());
-        return true;
-    }
-
     return false;
 }
 
-// `findByProps("GuildMemberRow")` (and UserRow/MemberListItem/etc) all came
-// back empty on-device — those export names don't exist in this build.
-// `/uvssniff` (a from-scratch component-name sniffer, see
-// patchComponentSniffer below) found the *real* names instead by recording
-// every component actually rendered while browsing: profile-related
-// component names came back as `UserProfilePrimaryInfo`, `Username`,
-// `UserTagAndPronouns`, etc — no "Row"/"Member"-named component appeared
-// (that sniff was taken while viewing a profile, not the member-list
-// sidebar specifically, so a per-row component may still exist and just
-// wasn't observed yet).
-//
-// `Username` is the most promising target — but `findByProps("Username")`
-// came back null on-device, even though `/uvssniff` proved a component whose
-// *function name* (`Component.name`) is literally "Username" really is being
-// rendered. That means it isn't re-exported under a module property called
-// "Username" — `findByProps` searches export *key* names, which don't have
-// to match the underlying function's `.name`, especially in bundled/minified
-// code. `findByName` is the right tool here instead: it's the exact same
-// lookup (`metro.findByName`) that successfully found `useBadges` earlier —
-// called with `defaultExp: false` so it returns the raw module (not an
-// auto-unwrapped `.default`), letting us patch `.default` on it directly,
-// mirroring the useBadges patch that's confirmed working on-device.
-const MEMBER_ROW_CANDIDATES = ["Username", "GuildMemberRow", "UserRow", "MemberListItem", "GuildMember", "UserListItem"];
+// NOTE: each of these patches the *element's* `.type` property (the render
+// function React actually calls for that element), never `element.type`'s
+// own "type" property — the latter doesn't exist and would silently patch
+// nothing. `vendetta.patcher.after("type", element, cb)` is the correct
+// call, matching PlatformIndicators' `u.patcher.after("type", s, cb)` where
+// `s` is itself the found element, not `s.type`.
+function patchUsernameElement(usernameEl: any) {
+    const unpatch = vendetta.patcher.after("type", usernameEl, (args: any[], ret: any) => {
+        const userId = args[0]?.user?.id ?? args[0]?.userId;
+        debugOnce(`Username.type props keys: ${args[0] ? Object.keys(args[0]).join(",") : "none"}`);
+        if (!userId) return;
 
-function findMemberRowComponent(): { label: string; target: any; prop: string; } | null {
-    for (const name of MEMBER_ROW_CANDIDATES) {
-        try {
-            const byName = vendetta.metro.findByName(name, false);
-            if (byName && typeof byName.default === "function") {
-                debugOnce(`findByName("${name}", false) -> module with .default function, patching .default`);
-                return { label: `${name} (findByName)`, target: byName, prop: "default" };
-            }
-            if (byName) {
-                debugOnce(`findByName("${name}", false) -> found but no .default (keys=${Object.keys(byName).slice(0, 8).join(",")})`);
-            } else {
-                debugOnce(`findByName("${name}", false) -> null`);
-            }
-        } catch (e) {
-            debugOnce(`findByName("${name}") threw: ${e}`);
-        }
-
-        try {
-            const mod = vendetta.metro.findByProps(name);
-            const exported = mod?.[name];
-            if (exported == null) {
-                debugOnce(`findByProps("${name}") -> ${mod ? `module found but no .${name} (keys=${Object.keys(mod).slice(0, 8).join(",")})` : "null"}`);
-                continue;
-            }
-            if (typeof exported === "object" && typeof exported.type === "function") {
-                debugOnce(`findByProps("${name}") -> object with .type, patching .type`);
-                return { label: name, target: exported, prop: "type" };
-            }
-            if (typeof exported === "function") {
-                debugOnce(`findByProps("${name}") -> bare function, patching "${name}" on its module directly`);
-                return { label: name, target: mod, prop: name };
-            }
-            debugOnce(`findByProps("${name}") -> found but unrecognized shape (${typeof exported})`);
-        } catch (e) {
-            debugOnce(`findByProps("${name}") threw: ${e}`);
-        }
-    }
-    return null;
-}
-
-function patchMemberRow() {
-    const found = findMemberRowComponent();
-    if (!found) {
-        debugOnce("No member-row component found from any candidate — member-list indicator unavailable (badge tray still applies)");
-        return;
-    }
-    debugOnce(`${found.label} found, patching`);
-
-    unpatchMemberRow = vendetta.patcher.after(found.prop, found.target, (args: any[], ret: any) => {
-        // Log the raw prop shape once — "Username" in particular might not
-        // receive a `user`/`userId` prop directly (could just be a string),
-        // in which case this whole approach needs rethinking once we see it.
-        debugOnce(`${found.label} props keys: ${args[0] ? Object.keys(args[0]).join(",") : "null/undefined"}`);
-
-        const user = args[0]?.user;
-        const userId = user?.id ?? args[0]?.userId;
-        if (!userId) {
-            debugLimitedName(`${found.label} ran but no user/userId prop found`);
-            return;
-        }
-
-        debugLimitedName(`${found.label} ran, userId=${userId}`);
-
+        debugLimitedName(`Username.type ran, userId=${userId}`);
         if (!isUserInVoice(userId)) return;
 
         try {
-            const appended = injectIntoMemberRow(ret);
-            debugLimitedName(`icon inject ${appended ? "succeeded" : "found no children array"} for ${userId}`);
+            const appended = appendVoiceIndicator(ret);
+            debugLimitedName(`Username icon append ${appended ? "succeeded" : "found no children array"} for ${userId}`);
         } catch (e) {
-            debugLimitedName(`icon inject threw: ${e}`);
+            debugLimitedName(`Username icon append threw: ${e}`);
         }
     });
+    memberRowUnpatchers.push(unpatch);
+}
+
+const memberRowUnpatchers: Array<() => void> = [];
+
+function patchMemberRow() {
+    const UserProfileContent = vendetta.metro.findByTypeName?.("UserProfileContent");
+    if (!UserProfileContent) {
+        debugOnce("findByTypeName(\"UserProfileContent\") NOT found — name-icon indicator unavailable (badge tray still applies)");
+        return;
+    }
+    debugOnce("UserProfileContent found via findByTypeName, patching nested chain");
+
+    memberRowUnpatchers.push(vendetta.patcher.after("type", UserProfileContent, (_args: any[], outer: any) => {
+        const primaryInfo = findInReactTree(outer, (n: any) => n?.type?.name === "PrimaryInfo");
+        if (!primaryInfo) {
+            debugOnce("PrimaryInfo not found in UserProfileContent's render tree");
+            return;
+        }
+
+        memberRowUnpatchers.push(vendetta.patcher.after("type", primaryInfo, (_a: any[], primaryInfoRet: any) => {
+            const userProfilePrimaryInfo = findInReactTree(primaryInfoRet, (n: any) => n?.type?.name === "UserProfilePrimaryInfo");
+            if (!userProfilePrimaryInfo) {
+                debugOnce("UserProfilePrimaryInfo not found in PrimaryInfo's render tree");
+                return;
+            }
+
+            memberRowUnpatchers.push(vendetta.patcher.after("type", userProfilePrimaryInfo, (_b: any[], infoRet: any) => {
+                // "DisplayName" is what PlatformIndicators calls it; /uvssniff
+                // showed this build calls the equivalent leaf "Username".
+                const usernameEl = findInReactTree(infoRet, (n: any) => n?.type?.name === "Username" || n?.type?.name === "DisplayName");
+                if (!usernameEl) {
+                    debugOnce("Username/DisplayName not found in UserProfilePrimaryInfo's render tree");
+                    return;
+                }
+                patchUsernameElement(usernameEl);
+            }));
+        }));
+    }));
+
+    unpatchMemberRow = () => memberRowUnpatchers.splice(0).forEach(u => u());
 }
 
 function onLoad() {
