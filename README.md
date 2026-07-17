@@ -9,7 +9,7 @@ This ships **two independent indicators**, both active at once:
 
 ## How it works
 
-**Name icon** — `/uvssniff` (see below) found the real, live component names by recording everything actually rendered on-device, rather than guessing: `Username`, `UserProfilePrimaryInfo`, `UserTagAndPronouns`, etc — none of the names several published plugins use (`GuildMemberRow`, `UserRow`, `DisplayName`, ...) exist under those names in this Discord build. This patches `Username` — found via `findByProps`, as either a `.type` property (if it's a memo/forwardRef-wrapped object) or the bare named export directly (if it's a plain function) — and splices a `Text("🔊")` element into its rendered output.
+**Name icon** — `/uvssniff` (see below) found the real, live component names by recording everything actually rendered on-device, rather than guessing: `Username`, `UserProfilePrimaryInfo`, `UserTagAndPronouns`, etc — none of the names several published plugins use (`GuildMemberRow`, `UserRow`, `DisplayName`, ...) exist under those names in this Discord build. But even `findByProps("Username")` came back `null` on-device, despite `/uvssniff` proving a component whose function name is literally `Username` really renders — because `findByProps` searches *export key* names, which don't have to match the underlying function's own `.name` in bundled/minified code. `findByName("Username", false)` is the correct lookup instead (the same one that successfully found `useBadges`): called with `defaultExp: false` it returns the raw module rather than an auto-unwrapped `.default`, which gets patched directly — mirroring the `useBadges().default` patch that's confirmed working. A `Text("🔊")` element is spliced into its rendered output.
 
 **Badge tray** — two patches, mirroring Kettu's own built-in **Badges** core plugin (`src/core/plugins/badges/index.tsx`):
 1. `useBadges` — patched via `after("default", useBadgesModule, ...)` to prepend an "In a voice call" entry to a user's badge array. The entry's `icon` field is just an inert placeholder string (`"dummy"`).
@@ -19,9 +19,9 @@ This ships **two independent indicators**, both active at once:
 
 ## Status
 
-The badge-tray indicator is confirmed working on-device. The `Username` name-icon patch is new — on-device logs confirmed `Username` exists as a real component and is reachable via `findByProps`, but whether the patch actually *fires* when it renders, and what shape its props are in (does it receive a `user`/`userId` at all, or just a plain string?), hasn't been confirmed yet. `/uvsdebug` will show `Username props keys: ...` the first time it renders, which will settle that.
+The badge-tray indicator is confirmed working on-device. The `Username` name-icon patch now uses `findByName` (matching the `useBadges` lookup pattern that's confirmed working) instead of the `findByProps` lookup that came back empty for this specific component. Whether it actually fires and what shape its props are (`user`/`userId`, or just a plain string?) will show up in `/uvsdebug` as `Username (findByName) props keys: ...` the first time it renders.
 
-**`/uvsdebug`'s and `/uvssniff`'s first line is the plugin version** (e.g. `UserVoiceShow v1.8.0`) — check this first after reinstalling, since GitHub raw/CDN propagation delay has repeatedly made it unclear whether Kettu actually fetched the latest build. If the version shown is stale, wait a bit and reinstall again before reporting a bug.
+**`/uvsdebug`'s and `/uvssniff`'s first line is the plugin version** (e.g. `UserVoiceShow v1.9.0`) — check this first after reinstalling, since GitHub raw/CDN propagation delay has repeatedly made it unclear whether Kettu actually fetched the latest build. If the version shown is stale, wait a bit and reinstall again before reporting a bug.
 
 ## Building
 
