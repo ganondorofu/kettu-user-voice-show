@@ -142,8 +142,20 @@ function alreadyHasIcon(node: any): boolean {
     return alreadyHasIcon(node.props?.label);
 }
 
+// If `ret` still contains an unrendered `<UserRow .../>` element inside it,
+// this call is an *outer* wrapper around another UserRow, not the leaf that
+// actually produces the visible row — React hasn't executed that inner
+// element yet at this point, so `alreadyHasIcon` can't see whatever it will
+// later add. Both would otherwise independently inject their own icon into
+// what ends up being the same visual row (the outer's icon sits beside the
+// inner element as a sibling; the inner adds its own once it renders).
+// Skipping outer wrappers and only injecting at the leaf avoids that.
+function wrapsAnotherUserRow(node: any): boolean {
+    return !!findInReactTree(node, (n: any) => n !== node && n?.type?.name === "UserRow");
+}
+
 function injectIntoRow(ret: any): boolean {
-    if (alreadyHasIcon(ret)) return false;
+    if (alreadyHasIcon(ret) || wrapsAnotherUserRow(ret)) return false;
 
     if (ret?.props && "label" in ret.props) {
         ret.props.label = React.createElement(
