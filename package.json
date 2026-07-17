@@ -1,0 +1,13 @@
+{
+  "name": "kettu-user-voice-show",
+  "version": "1.0.0",
+  "description": "Kettu plugin: shows a badge when a user is in a voice call anywhere",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "license": "MIT"
+}

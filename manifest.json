@@ -1,0 +1,12 @@
+{
+  "name": "UserVoiceShow",
+  "description": "Shows a badge on a user's profile when they're in a voice call anywhere",
+  "authors": [
+    {
+      "name": "56"
+    }
+  ],
+  "main": "index.js",
+  "hash": "3073CCF845D5C54195ACD239A87D35EAF3846029169948DADB733DF2EB6C9075",
+  "vendetta": {}
+}
