@@ -11,6 +11,18 @@ declare const vendetta: any;
 
 const logger = vendetta.logger;
 const { getAssetIDByName } = vendetta.ui.assets;
+const { showToast } = vendetta.ui.toasts;
+
+// TEMPORARY: surfaces what's actually happening via toasts, since there's no
+// easy way to read console/logger output on-device. Remove once the badge is
+// confirmed working.
+const DEBUG = true;
+function debugToast(msg: string) {
+    if (!DEBUG) return;
+    try {
+        showToast?.(`[UVS] ${msg}`);
+    } catch { }
+}
 
 const VoiceStateStore = vendetta.metro.findByStoreName("VoiceStateStore");
 
@@ -60,18 +72,26 @@ let unpatchBadges: (() => void) | null = null;
 
 function patchBadges() {
     if (!useBadgesModule || typeof useBadgesModule.default !== "function") {
-        logger?.warn("[UserVoiceShow] could not find useBadges module, badge won't show");
+        debugToast(`useBadges NOT found (module=${!!useBadgesModule})`);
         return;
     }
+    debugToast("useBadges found, patch installed");
 
     cachedIcon = resolveIcon();
+    debugToast(`icon resolved: ${cachedIcon != null ? String(cachedIcon) : "none"}`);
 
-    unpatchBadges = vendetta.patcher.after("default", useBadgesModule, (args: any[], result: any[]) => {
+    unpatchBadges = vendetta.patcher.after("default", useBadgesModule, (args: any[], result: any) => {
         const user = args[0];
         const userId = user?.userId ?? user?.user?.id;
+
+        debugToast(`hook ran, userId=${userId ?? "?"}, resultType=${Array.isArray(result) ? "array" : typeof result}`);
+
         if (!userId || !Array.isArray(result)) return;
 
-        if (isUserInVoice(userId)) {
+        const inVoice = isUserInVoice(userId);
+        debugToast(`inVoice=${inVoice} for ${userId}, VoiceStateStore=${!!VoiceStateStore}`);
+
+        if (inVoice) {
             result.unshift({
                 id: "user-voice-show.in-call",
                 description: "In a voice call",
@@ -82,10 +102,12 @@ function patchBadges() {
 }
 
 function onLoad() {
+    debugToast(`VoiceStateStore found: ${!!VoiceStateStore}`);
     try {
         patchBadges();
     } catch (e) {
         logger?.error("[UserVoiceShow] failed to patch badges:", e);
+        debugToast(`patch threw: ${e}`);
     }
 }
 
